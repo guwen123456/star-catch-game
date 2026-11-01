@@ -31,20 +31,71 @@ function resize(){
 }
 window.addEventListener('resize',resize);
 
-// ---------- audio (tiny beeps, no assets) ----------
-var AC=null,muted=false;
+// ---------- audio: SFX beeps + procedural BGM (no assets, all synthesized) ----------
+var AC=null,muted=false,sfxGain=null,musGain=null;
+function ensureAC(){
+  try{
+    if(!AC){
+      AC=new (window.AudioContext||window.webkitAudioContext)();
+      sfxGain=AC.createGain(); sfxGain.gain.value=muted?0:1; sfxGain.connect(AC.destination);
+      musGain=AC.createGain(); musGain.gain.value=muted?0:0.9; musGain.connect(AC.destination);
+    }
+    if(AC.state==='suspended') AC.resume();
+    return AC;
+  }catch(e){ return null; }
+}
 function beep(f,d,type,g){
   if(muted) return;
+  var ac=ensureAC(); if(!ac) return;
   try{
-    if(!AC) AC=new (window.AudioContext||window.webkitAudioContext)();
-    if(AC.state==='suspended') AC.resume();
-    var o=AC.createOscillator(),v=AC.createGain();
+    var o=ac.createOscillator(),v=ac.createGain();
     o.type=type||'sine'; o.frequency.value=f;
-    v.gain.setValueAtTime(g||0.08,AC.currentTime);
-    v.gain.exponentialRampToValueAtTime(0.001,AC.currentTime+(d||0.09));
-    o.connect(v); v.connect(AC.destination);
-    o.start(); o.stop(AC.currentTime+(d||0.09));
+    v.gain.setValueAtTime(g||0.08,ac.currentTime);
+    v.gain.exponentialRampToValueAtTime(0.001,ac.currentTime+(d||0.09));
+    o.connect(v); v.connect(sfxGain);
+    o.start(); o.stop(ac.currentTime+(d||0.09));
   }catch(e){}
+}
+function setMuted(m){
+  muted=m;
+  if(sfxGain) sfxGain.gain.value=m?0:1;
+  if(musGain) musGain.gain.value=m?0:0.9;
+}
+// --- BGM: 100 BPM loop, C - F - C - G, pentatonic melody + soft pad + bass ---
+var MUS={on:false,step:0,nextT:0,timer:null,scheduled:0};
+var MEL=[659.25,0,523.25,0, 587.33,0,659.25,783.99, 880,0,783.99,659.25, 587.33,0,523.25,0,
+         587.33,0,659.25,0, 783.99,0,659.25,587.33, 523.25,0,587.33,523.25, 440,0,0,0];
+var BASS=[130.81,87.31,130.81,98.00]; // C2? use C3/F2/C3/G2 roots per bar
+var PAD=[[261.63,392.00],[174.61,261.63],[261.63,392.00],[196.00,293.66]];
+function noteAt(freq,t,dur,type,gain,dest){
+  var o=AC.createOscillator(),v=AC.createGain();
+  o.type=type; o.frequency.value=freq;
+  v.gain.setValueAtTime(0.0001,t);
+  v.gain.exponentialRampToValueAtTime(gain,t+0.03);
+  v.gain.exponentialRampToValueAtTime(0.0001,t+dur);
+  o.connect(v); v.connect(dest);
+  o.start(t); o.stop(t+dur+0.05);
+}
+function scheduleStep(step,t){
+  var bar=Math.floor(step/8)%4, inBar=step%8, stepDur=0.30;
+  var mel=MEL[step%32];
+  if(mel) noteAt(mel,t,0.26,'triangle',0.045,musGain);
+  if(inBar===0){ noteAt(BASS[bar],t,0.5,'sine',0.055,musGain);
+    noteAt(PAD[bar][0],t,stepDur*8,'sine',0.016,musGain);
+    noteAt(PAD[bar][1],t,stepDur*8,'sine',0.014,musGain); }
+  if(inBar===4) noteAt(BASS[bar]*1.5,t,0.4,'sine',0.04,musGain);
+  MUS.scheduled++;
+}
+function startMusic(){
+  var ac=ensureAC(); if(!ac||MUS.on) return;
+  MUS.on=true; MUS.step=0; MUS.nextT=ac.currentTime+0.06;
+  MUS.timer=setInterval(function(){
+    if(!AC) return;
+    while(MUS.nextT < AC.currentTime+0.28){
+      scheduleStep(MUS.step,MUS.nextT);
+      MUS.nextT+=0.30; MUS.step++;
+    }
+  },110);
 }
 
 // ---------- storage ----------
@@ -66,7 +117,7 @@ function reset(){
   score=0;lives=3;combo=0;timeAlive=0;spawnT=0;shake=0;
   boat.x=W/2;
 }
-function startGame(){ reset(); state=STATE.PLAY; beep(660,0.12,'triangle',0.09); }
+function startGame(){ reset(); state=STATE.PLAY; startMusic(); beep(660,0.12,'triangle',0.09); }
 
 function spawn(){
   var r=Math.random();
@@ -98,17 +149,36 @@ function pointX(clientX){
   var rect=canvas.getBoundingClientRect();
   return clientX-rect.left;
 }
+function pointY(clientY){
+  var rect=canvas.getBoundingClientRect();
+  return clientY-rect.top;
+}
+// sound toggle button (top-right)
+function muteBtn(){ return {x:W-30,y:88,r:19}; }
+function hitMute(cx,cy){
+  var b=muteBtn(),dx=cx-b.x,dy=cy-b.y;
+  return dx*dx+dy*dy <= (b.r+8)*(b.r+8);
+}
+function drawMuteBtn(){
+  var b=muteBtn();
+  ctx.beginPath(); ctx.arc(b.x,b.y,b.r,0,7);
+  ctx.fillStyle='rgba(255,255,255,0.13)'; ctx.fill();
+  ctx.strokeStyle='rgba(255,255,255,0.35)'; ctx.lineWidth=1; ctx.stroke();
+  ctx.font='15px sans-serif'; ctx.textAlign='center';
+  ctx.fillText(muted?'🔇':'🔊',b.x,b.y+5);
+  ctx.textAlign='left';
+}
 var dragging=false;
-canvas.addEventListener('touchstart',function(e){ e.preventDefault(); dragging=true; if(e.touches[0]) boat.x=pointX(e.touches[0].clientX); tap(); },{passive:false});
+canvas.addEventListener('touchstart',function(e){ e.preventDefault(); dragging=true; if(e.touches[0]){ var px=pointX(e.touches[0].clientX),py=pointY(e.touches[0].clientY); if(hitMute(px,py)){ setMuted(!muted); return; } boat.x=px; } tap(); },{passive:false});
 canvas.addEventListener('touchmove',function(e){ e.preventDefault(); if(e.touches[0]) boat.x=pointX(e.touches[0].clientX); },{passive:false});
 canvas.addEventListener('touchend',function(e){ e.preventDefault(); dragging=false; },{passive:false});
-canvas.addEventListener('mousedown',function(e){ dragging=true; boat.x=pointX(e.clientX); tap(); });
+canvas.addEventListener('mousedown',function(e){ if(hitMute(pointX(e.clientX),pointY(e.clientY))){ setMuted(!muted); return; } dragging=true; boat.x=pointX(e.clientX); tap(); });
 canvas.addEventListener('mousemove',function(e){ if(state===STATE.PLAY||dragging) boat.x=pointX(e.clientX); });
 window.addEventListener('mouseup',function(){ dragging=false; });
 window.addEventListener('keydown',function(e){
   keys[e.key]=true;
   if((e.key===' '||e.key==='Enter') && state!==STATE.PLAY){ startGame(); }
-  if(e.key==='m'||e.key==='M'){ muted=!muted; }
+  if(e.key==='m'||e.key==='M'){ setMuted(!muted); }
 });
 window.addEventListener('keyup',function(e){ keys[e.key]=false; });
 
@@ -198,7 +268,7 @@ function drawHUD(){
   ctx.fillText(hearts,W-14,34);
   ctx.font='500 12px "PingFang SC","Microsoft YaHei",sans-serif';
   ctx.fillStyle='rgba(255,255,255,0.55)';
-  ctx.fillText(muted?'按 M 开声音':'按 M 静音',W-14,56);
+  ctx.fillText('点右上角按钮开关声音',W-14,56);
   ctx.textAlign='left';
 }
 function bigButton(text,y,w){
@@ -224,6 +294,7 @@ function drawMenu(){
   ctx.fillText('⭐ 星星 +10　🌟 金星 +30',W/2,H*0.30+76);
   ctx.fillText('☄️ 流星别接，漏掉星星也会扣命',W/2,H*0.30+100);
   ctx.fillText('一共 3 条命，看看你能撑多久',W/2,H*0.30+124);
+  ctx.fillText('🎵 建议开声音玩，右上角可静音',W/2,H*0.30+148);
   bigButton('开始游戏',H*0.62);
   if(best>0){
     ctx.font='500 14px "PingFang SC","Microsoft YaHei",sans-serif';
@@ -341,6 +412,7 @@ if(location.hash.indexOf('debug')>=0){ window.__SC=DBG; }
 function frame(ts){
   DBG.state=state; DBG.score=score; DBG.lives=lives; DBG.items=items.length; DBG.t=Math.round(timeAlive*10)/10;
   DBG.boatX=Math.round(boat.x);
+  DBG.music={on:MUS.on,scheduled:MUS.scheduled,muted:muted,acState:AC?AC.state:'none'};
   DBG.list=items.map(function(it){return {x:Math.round(it.x),y:Math.round(it.y),t:it.type};});
   var dt=lastTs?Math.min((ts-lastTs)/1000,0.05):0.016;
   lastTs=ts;
@@ -349,6 +421,7 @@ function frame(ts){
   stepParts(dt);
   if(state===STATE.MENU){ drawBoat(); drawMenu(); }
   else { draw(); drawHUD(); if(state===STATE.OVER) drawOver(); }
+  drawMuteBtn();
   requestAnimationFrame(frame);
 }
 resize();
