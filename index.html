@@ -1,0 +1,360 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<title>星星接接乐</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  html,body{width:100%;height:100%;overflow:hidden;background:#0b1026;font-family:"PingFang SC","Microsoft YaHei",system-ui,sans-serif;touch-action:none;user-select:none;-webkit-user-select:none}
+  #wrap{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:radial-gradient(1200px 800px at 50% -10%,#1c2a5e 0%,#0b1026 55%)}
+  canvas{display:block;border-radius:0}
+  #hint{position:fixed;left:0;right:0;bottom:calc(6px + env(safe-area-inset-bottom));text-align:center;color:rgba(255,255,255,.45);font-size:12px;pointer-events:none}
+</style>
+</head>
+<body>
+<div id="wrap"><canvas id="game"></canvas></div>
+<script>
+"use strict";
+(function(){
+var canvas=document.getElementById('game'),ctx=canvas.getContext('2d');
+var W=0,H=0,DPR=1;
+function resize(){
+  DPR=Math.min(window.devicePixelRatio||1,2);
+  var aw=window.innerWidth,ah=window.innerHeight;
+  // portrait play field, max width 480
+  W=Math.min(aw,480); H=ah;
+  canvas.style.width=W+'px'; canvas.style.height=H+'px';
+  canvas.width=Math.round(W*DPR); canvas.height=Math.round(H*DPR);
+  ctx.setTransform(DPR,0,0,DPR,0,0);
+  if(boat) boat.y=H-84;
+}
+window.addEventListener('resize',resize);
+
+// ---------- audio (tiny beeps, no assets) ----------
+var AC=null,muted=false;
+function beep(f,d,type,g){
+  if(muted) return;
+  try{
+    if(!AC) AC=new (window.AudioContext||window.webkitAudioContext)();
+    if(AC.state==='suspended') AC.resume();
+    var o=AC.createOscillator(),v=AC.createGain();
+    o.type=type||'sine'; o.frequency.value=f;
+    v.gain.setValueAtTime(g||0.08,AC.currentTime);
+    v.gain.exponentialRampToValueAtTime(0.001,AC.currentTime+(d||0.09));
+    o.connect(v); v.connect(AC.destination);
+    o.start(); o.stop(AC.currentTime+(d||0.09));
+  }catch(e){}
+}
+
+// ---------- storage ----------
+function loadBest(){ try{return parseInt(localStorage.getItem('starCatchBest')||'0',10)||0;}catch(e){return 0;} }
+function saveBest(v){ try{localStorage.setItem('starCatchBest',String(v));}catch(e){} }
+
+// ---------- game state ----------
+var STATE={MENU:0,PLAY:1,OVER:2};
+var state=STATE.MENU;
+var boat={x:0,y:0,w:100,h:20,speed:0};
+var items=[],parts=[],floats=[];
+var score=0,lives=3,combo=0,best=loadBest(),timeAlive=0,spawnT=0,shake=0;
+var keys={};
+var bgStars=[];
+for(var i=0;i<70;i++) bgStars.push({x:Math.random(),y:Math.random(),r:Math.random()*1.6+0.4,s:Math.random()*0.5+0.15});
+
+function reset(){
+  items=[];parts=[];floats=[];
+  score=0;lives=3;combo=0;timeAlive=0;spawnT=0;shake=0;
+  boat.x=W/2;
+}
+function startGame(){ reset(); state=STATE.PLAY; beep(660,0.12,'triangle',0.09); }
+
+function spawn(){
+  var r=Math.random();
+  var type= r<0.72 ? 'star' : (r<0.85 ? 'gold' : 'meteor');
+  var base=4.0+Math.min(2.6,timeAlive*0.045);
+  items.push({
+    type:type,
+    x:24+Math.random()*(W-48),
+    y:-26,
+    vy:base+Math.random()*1.4,
+    vx:(Math.random()-0.5)*0.5,
+    rot:Math.random()*Math.PI*2,
+    vr:(Math.random()-0.5)*0.06,
+    r: type==='meteor'?15:14
+  });
+}
+function burst(x,y,color,n){
+  for(var i=0;i<(n||10);i++){
+    var a=Math.random()*Math.PI*2,sp=Math.random()*2.4+0.6;
+    parts.push({x:x,y:y,vx:Math.cos(a)*sp,vy:Math.sin(a)*sp-0.6,life:1,color:color,r:Math.random()*2.6+1});
+  }
+}
+function floatText(x,y,text,color){
+  floats.push({x:x,y:y,text:text,color:color,life:1});
+}
+
+// ---------- input ----------
+function pointX(clientX){
+  var rect=canvas.getBoundingClientRect();
+  return clientX-rect.left;
+}
+var dragging=false;
+canvas.addEventListener('touchstart',function(e){ e.preventDefault(); dragging=true; if(e.touches[0]) boat.x=pointX(e.touches[0].clientX); tap(); },{passive:false});
+canvas.addEventListener('touchmove',function(e){ e.preventDefault(); if(e.touches[0]) boat.x=pointX(e.touches[0].clientX); },{passive:false});
+canvas.addEventListener('touchend',function(e){ e.preventDefault(); dragging=false; },{passive:false});
+canvas.addEventListener('mousedown',function(e){ dragging=true; boat.x=pointX(e.clientX); tap(); });
+canvas.addEventListener('mousemove',function(e){ if(state===STATE.PLAY||dragging) boat.x=pointX(e.clientX); });
+window.addEventListener('mouseup',function(){ dragging=false; });
+window.addEventListener('keydown',function(e){
+  keys[e.key]=true;
+  if((e.key===' '||e.key==='Enter') && state!==STATE.PLAY){ startGame(); }
+  if(e.key==='m'||e.key==='M'){ muted=!muted; }
+});
+window.addEventListener('keyup',function(e){ keys[e.key]=false; });
+
+function tap(){
+  if(state===STATE.MENU) startGame();
+  else if(state===STATE.OVER && overAt && (Date.now()-overAt>600)) startGame();
+}
+
+// ---------- drawing helpers ----------
+function rr(x,y,w,h,r){
+  ctx.beginPath();
+  ctx.moveTo(x+r,y); ctx.arcTo(x+w,y,x+w,y+h,r); ctx.arcTo(x+w,y+h,x,y+h,r);
+  ctx.arcTo(x,y+h,x,y,r); ctx.arcTo(x,y,x+w,y,r); ctx.closePath();
+}
+function drawStar(x,y,r,color,rot){
+  ctx.save(); ctx.translate(x,y); ctx.rotate(rot||0);
+  ctx.beginPath();
+  for(var i=0;i<10;i++){
+    var rad=i%2===0?r:r*0.48, a=-Math.PI/2+i*Math.PI/5;
+    var px=Math.cos(a)*rad, py=Math.sin(a)*rad;
+    if(i===0) ctx.moveTo(px,py); else ctx.lineTo(px,py);
+  }
+  ctx.closePath(); ctx.fillStyle=color; ctx.fill();
+  ctx.restore();
+}
+function drawMeteor(x,y,r,rot){
+  ctx.save(); ctx.translate(x,y); ctx.rotate(rot||0);
+  var g=ctx.createLinearGradient(-r*2.2,0,0,0);
+  g.addColorStop(0,'rgba(248,113,113,0)'); g.addColorStop(1,'rgba(248,113,113,0.55)');
+  ctx.fillStyle=g; ctx.fillRect(-r*3.2,-r*0.42,r*2.4,r*0.84);
+  ctx.beginPath(); ctx.arc(0,0,r,0,7); ctx.fillStyle='#475569'; ctx.fill();
+  ctx.beginPath(); ctx.arc(-r*0.3,-r*0.25,r*0.28,0,7); ctx.fillStyle='#64748b'; ctx.fill();
+  ctx.beginPath(); ctx.arc(r*0.32,r*0.3,r*0.2,0,7); ctx.fillStyle='#64748b'; ctx.fill();
+  ctx.restore();
+}
+function drawBoat(){
+  var x=boat.x,y=boat.y;
+  ctx.save(); ctx.translate(x,y);
+  // glow tray
+  ctx.beginPath(); ctx.ellipse(0,10,boat.w/2,10,0,0,7);
+  ctx.fillStyle='rgba(56,189,248,0.20)'; ctx.fill();
+  // hull = crescent boat
+  ctx.beginPath();
+  ctx.moveTo(-boat.w/2,-2);
+  ctx.quadraticCurveTo(0,22,boat.w/2,-2);
+  ctx.quadraticCurveTo(0,8,-boat.w/2,-2);
+  ctx.closePath();
+  var g=ctx.createLinearGradient(0,-6,0,20);
+  g.addColorStop(0,'#38bdf8'); g.addColorStop(1,'#2563eb');
+  ctx.fillStyle=g; ctx.fill();
+  ctx.strokeStyle='rgba(255,255,255,0.65)'; ctx.lineWidth=1.5; ctx.stroke();
+  // little lamp
+  ctx.beginPath(); ctx.arc(0,-6,4.5,0,7); ctx.fillStyle='#fde68a'; ctx.fill();
+  ctx.restore();
+}
+function drawBG(t){
+  var g=ctx.createLinearGradient(0,0,0,H);
+  g.addColorStop(0,'#0b1026'); g.addColorStop(0.6,'#101a3f'); g.addColorStop(1,'#16224f');
+  ctx.fillStyle=g; ctx.fillRect(0,0,W,H);
+  for(var i=0;i<bgStars.length;i++){
+    var s=bgStars[i];
+    var y=((s.y*H + t*0.012*s.s*60)%H);
+    ctx.globalAlpha=0.35+0.35*Math.sin(t*0.001+s.x*20);
+    ctx.fillStyle='#e0e7ff';
+    ctx.beginPath(); ctx.arc(s.x*W,y,s.r,0,7); ctx.fill();
+  }
+  ctx.globalAlpha=1;
+  // moon (below the HUD, right side)
+  ctx.beginPath(); ctx.arc(W-44,124,18,0,7); ctx.fillStyle='#fef3c7'; ctx.fill();
+  ctx.beginPath(); ctx.arc(W-52,119,15,0,7); ctx.fillStyle='#131f45'; ctx.fill();
+}
+function drawHUD(){
+  ctx.fillStyle='rgba(255,255,255,0.92)';
+  ctx.font='700 20px "PingFang SC","Microsoft YaHei",sans-serif';
+  ctx.textAlign='left'; ctx.fillText('得分 '+score,16,34);
+  ctx.font='500 13px "PingFang SC","Microsoft YaHei",sans-serif';
+  ctx.fillStyle='rgba(255,255,255,0.6)';
+  ctx.fillText('最高 '+best,16,56);
+  if(combo>=3){
+    ctx.fillStyle='#fbbf24'; ctx.font='700 15px "PingFang SC","Microsoft YaHei",sans-serif';
+    ctx.fillText('连击 ×'+combo,16,78);
+  }
+  // lives
+  ctx.textAlign='right'; ctx.font='17px sans-serif';
+  var hearts='';
+  for(var i=0;i<3;i++) hearts += i<lives ? '❤️' : '🖤';
+  ctx.fillText(hearts,W-14,34);
+  ctx.font='500 12px "PingFang SC","Microsoft YaHei",sans-serif';
+  ctx.fillStyle='rgba(255,255,255,0.55)';
+  ctx.fillText(muted?'按 M 开声音':'按 M 静音',W-14,56);
+  ctx.textAlign='left';
+}
+function bigButton(text,y,w){
+  var bw=w||210,bh=52,bx=W/2-bw/2,by=y-bh/2;
+  rr(bx,by,bw,bh,26);
+  var g=ctx.createLinearGradient(bx,by,bx,by+bh);
+  g.addColorStop(0,'#f59e0b'); g.addColorStop(1,'#ea580c');
+  ctx.fillStyle=g; ctx.fill();
+  ctx.fillStyle='#fff'; ctx.font='700 20px "PingFang SC","Microsoft YaHei",sans-serif';
+  ctx.textAlign='center'; ctx.fillText(text,W/2,y+7); ctx.textAlign='left';
+}
+function drawMenu(){
+  ctx.fillStyle='#fff'; ctx.textAlign='center';
+  ctx.font='800 44px "PingFang SC","Microsoft YaHei",sans-serif';
+  ctx.fillText('星星接接乐',W/2,H*0.30);
+  drawStar(W/2-108,H*0.30-14,15,'#fbbf24',0.4);
+  drawStar(W/2+108,H*0.30-14,15,'#fbbf24',-0.3);
+  ctx.font='400 16px "PingFang SC","Microsoft YaHei",sans-serif';
+  ctx.fillStyle='rgba(255,255,255,0.82)';
+  ctx.fillText('移动月亮小船，接住掉下来的星星',W/2,H*0.30+42);
+  ctx.font='400 14px "PingFang SC","Microsoft YaHei",sans-serif';
+  ctx.fillStyle='rgba(255,255,255,0.62)';
+  ctx.fillText('⭐ 星星 +10　🌟 金星 +30',W/2,H*0.30+76);
+  ctx.fillText('☄️ 流星别接，漏掉星星也会扣命',W/2,H*0.30+100);
+  ctx.fillText('一共 3 条命，看看你能撑多久',W/2,H*0.30+124);
+  bigButton('开始游戏',H*0.62);
+  if(best>0){
+    ctx.font='500 14px "PingFang SC","Microsoft YaHei",sans-serif';
+    ctx.fillStyle='rgba(255,255,255,0.6)';
+    ctx.fillText('最高纪录：'+best+' 分',W/2,H*0.62+58);
+  }
+  ctx.font='400 11px "PingFang SC","Microsoft YaHei",sans-serif';
+  ctx.fillStyle='rgba(255,255,255,0.38)';
+  ctx.fillText('适龄提示：8+ · 本游戏不联网、不收集个人信息、无内购',W/2,H-28);
+  ctx.textAlign='left';
+}
+var overAt=0;
+function drawOver(){
+  ctx.fillStyle='rgba(4,8,24,0.72)'; ctx.fillRect(0,0,W,H);
+  ctx.fillStyle='#fff'; ctx.textAlign='center';
+  ctx.font='800 34px "PingFang SC","Microsoft YaHei",sans-serif';
+  ctx.fillText('游戏结束',W/2,H*0.34);
+  ctx.font='700 22px "PingFang SC","Microsoft YaHei",sans-serif';
+  ctx.fillStyle='#fbbf24';
+  ctx.fillText('得分 '+score,W/2,H*0.34+48);
+  ctx.font='400 15px "PingFang SC","Microsoft YaHei",sans-serif';
+  ctx.fillStyle='rgba(255,255,255,0.75)';
+  ctx.fillText('坚持了 '+Math.floor(timeAlive)+' 秒 · 最高 '+best+' 分',W/2,H*0.34+78);
+  if(score>=best && score>0){
+    ctx.fillStyle='#4ade80';
+    ctx.fillText('🎉 新纪录！',W/2,H*0.34+106);
+  }
+  bigButton('再来一局',H*0.60);
+  ctx.textAlign='left';
+}
+
+// ---------- update ----------
+var lastTs=0;
+function update(dt){
+  if(keys['ArrowLeft']) boat.x-=7;
+  if(keys['ArrowRight']) boat.x+=7;
+  boat.x=Math.max(boat.w/2-6,Math.min(W-boat.w/2+6,boat.x));
+
+  if(state!==STATE.PLAY) return;
+  timeAlive+=dt;
+  spawnT-=dt;
+  var interval=Math.max(0.55,1.15-timeAlive*0.010);
+  if(spawnT<=0){ spawn(); spawnT=interval; }
+
+  var catchY=boat.y-2;
+  for(var i=items.length-1;i>=0;i--){
+    var it=items[i];
+    it.y+=it.vy*(dt*60)*0.9; it.x+=it.vx; it.rot+=it.vr;
+    if(it.y>=catchY && it.y<=catchY+26 && Math.abs(it.x-boat.x)<boat.w/2+6){
+      items.splice(i,1);
+      if(it.type==='meteor'){
+        lives--; combo=0; shake=10;
+        floatText(it.x,it.y-18,'-1 命','#f87171');
+        burst(it.x,it.y,'#f87171',12); beep(140,0.16,'sawtooth',0.07);
+      }else{
+        var pts=it.type==='gold'?30:10;
+        combo++; score+=pts;
+        floatText(it.x,it.y-18,'+'+pts,it.type==='gold'?'#fde047':'#fff');
+        burst(it.x,it.y,it.type==='gold'?'#fde047':'#fbbf24',it.type==='gold'?16:10);
+        beep(it.type==='gold'?980:740,0.08,'triangle',0.08);
+      }
+      continue;
+    }
+    if(it.y>H+30){
+      items.splice(i,1);
+      if(it.type!=='meteor'){
+        lives--; combo=0; shake=6;
+        floatText(it.x,H-110,'漏啦 -1 命','#f87171');
+        beep(180,0.12,'square',0.05);
+      }
+    }
+  }
+  if(lives<=0){
+    lives=0; state=STATE.OVER; overAt=Date.now();
+    if(score>best){ best=score; saveBest(best); }
+    beep(320,0.25,'triangle',0.08);
+  }
+}
+function stepParts(dt){
+  for(var i=parts.length-1;i>=0;i--){
+    var p=parts[i]; p.x+=p.vx; p.y+=p.vy; p.vy+=0.05; p.life-=dt*1.6;
+    if(p.life<=0) parts.splice(i,1);
+  }
+  for(var j=floats.length-1;j>=0;j--){
+    var f=floats[j]; f.y-=0.7; f.life-=dt*1.2;
+    if(f.life<=0) floats.splice(j,1);
+  }
+}
+function draw(){
+  ctx.save();
+  if(shake>0){ ctx.translate((Math.random()-0.5)*shake,(Math.random()-0.5)*shake); shake*=0.86; if(shake<0.4) shake=0; }
+  for(var i=0;i<items.length;i++){
+    var it=items[i];
+    if(it.type==='meteor') drawMeteor(it.x,it.y,it.r,it.rot);
+    else drawStar(it.x,it.y,it.r,it.type==='gold'?'#fde047':'#fbbf24',it.rot);
+  }
+  drawBoat();
+  for(var k=0;k<parts.length;k++){
+    var p=parts[k]; ctx.globalAlpha=Math.max(p.life,0);
+    ctx.beginPath(); ctx.arc(p.x,p.y,p.r,0,7); ctx.fillStyle=p.color; ctx.fill();
+  }
+  ctx.globalAlpha=1;
+  ctx.font='700 15px "PingFang SC","Microsoft YaHei",sans-serif'; ctx.textAlign='center';
+  for(var j=0;j<floats.length;j++){
+    var f=floats[j]; ctx.globalAlpha=Math.max(f.life,0);
+    ctx.fillStyle=f.color; ctx.fillText(f.text,f.x,f.y);
+  }
+  ctx.globalAlpha=1; ctx.textAlign='left';
+  ctx.restore();
+}
+
+// ---------- main loop ----------
+var DBG={};
+if(location.hash.indexOf('debug')>=0){ window.__SC=DBG; }
+function frame(ts){
+  DBG.state=state; DBG.score=score; DBG.lives=lives; DBG.items=items.length; DBG.t=Math.round(timeAlive*10)/10;
+  DBG.boatX=Math.round(boat.x);
+  DBG.list=items.map(function(it){return {x:Math.round(it.x),y:Math.round(it.y),t:it.type};});
+  var dt=lastTs?Math.min((ts-lastTs)/1000,0.05):0.016;
+  lastTs=ts;
+  drawBG(ts);
+  update(dt);
+  stepParts(dt);
+  if(state===STATE.MENU){ drawBoat(); drawMenu(); }
+  else { draw(); drawHUD(); if(state===STATE.OVER) drawOver(); }
+  requestAnimationFrame(frame);
+}
+resize();
+boat.x=W/2; boat.y=H-84;
+requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
